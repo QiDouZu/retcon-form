@@ -129,27 +129,25 @@ def cmd_use(store, args):
     ctx = (args.get('context') or '').strip()
     if not ctx:
         return {'ok': False, 'msg': 'use 必须写背景（--context）——没有背景就没有覆盖'}
+    # 磨损 = 这次概括时砍掉了原文的哪部分（不是「后来消失的读法」）
+    cut = split_reads(args.get('cut'))
     uses = [u for u in store.all_uses() if u['text_id'] == tid]
     uid = f'{tid}_u{len(uses)+1}'
-    before = set()
-    for u in uses:
-        before |= set(u['reads'])
-    new_reads = [r for r in reads if r not in before]
     rec = {'id': uid, 'text_id': tid, 'context': ctx,
-           'reads': reads, 'new': new_reads, 'ts': now()}
+           'reads': reads, 'cut': cut, 'ts': now()}
     store.append(store.uses, rec)
 
-    # 状态：用过 ≥1 次 = 用；连续两次无新增 = 饱和
+    # 状态：用过 ≥1 次 = 用；连续两次读法相同且都没有新削减 = 饱和
     state = STATE_USED
     if uses:
-        last_new = uses[-1].get('new') or []
-        if not new_reads and not last_new:
+        last = uses[-1]
+        if set(last.get('reads') or []) == set(reads) and set(last.get('cut') or []) == set(cut):
             state = STATE_SAT
     t2 = dict(t)
     t2['state'] = state
     store.append(store.texts, t2)
     store.seam('use', [tid, uid], None, rec,
-               f'第{len(uses)+1}次使用；新增{len(new_reads)}条')
+               f'第{len(uses)+1}次使用；读出{len(reads)}条；砍掉{len(cut)}条原文')
     return {'ok': True, 'msg': f'{tid} 第{len(uses)+1}次使用（背景：{ctx}）',
             'record': rec, 'text_state': state}
 
@@ -161,31 +159,49 @@ def cmd_cover(store, args):
         return {'ok': False, 'msg': f'找不到 {tid}'}
     uses = [u for u in store.all_uses() if u['text_id'] == tid]
     if not uses:
-        return {'ok': True, 'text': t['raw'], 'msg': '这句话还没被用过：没有覆盖，也没有差集',
-                '使用次数': 0, '研究点': [], '相同的地方': []}
+        return {'ok': True, 'text': t['raw'],
+                'msg': '这句话还没被用过：没有概括，就没有磨损',
+                '使用次数': 0}
     sets = [set(u['reads']) for u in uses]
     union = set().union(*sets)
     inter = set.intersection(*sets) if len(sets) > 1 else set()
-    every_seen = union
-    # 磨损：只在早期出现、最后一次之后不再出现
-    worn = []
-    if len(uses) > 1:
-        last = set(uses[-1]['reads'])
-        for r in union:
-            if r not in last:
-                appeared_at = [i for i, u in enumerate(uses) if r in u['reads']]
-                if appeared_at and max(appeared_at) < len(uses) - 1:
-                    worn.append(r)
+    # 磨损并集：每次概括砍掉的原文，合起来就是「你到现在为止没看见的那部分」
+    worn = set()
+    for u in uses:
+        worn |= set(u.get('cut') or [])
     return {
         'ok': True,
-        'text': t['raw'],
+        '原文': t['raw'],
         '使用次数': len(uses),
+        '每次概括': [{'背景': u['context'], '读出的': u['reads'],
+                      '砍掉原文': u.get('cut') or []} for u in uses],
         '相同的地方（交集）': sorted(inter),
-        '多出来的（每次独有）': {u['id']: [r for r in u['reads'] if r not in inter] for u in uses},
         '差集（研究点）': sorted(union - inter),
-        '磨损（只在早期出现）': worn,
+        '磨损（概括砍掉的原文，并集）': sorted(worn),
+        '磨损次数': len(worn),
         '状态': t['state'],
-        '说明': '交集=反复稳定的意思；差集=覆盖不到的部分；磨损=这次用掉了的老意思',
+        '说明': '磨损=每次概括砍掉的那部分原文；回头读原文，才看得见少了什么',
+    }
+
+
+def cmd_back(store, args):
+    """回头看：先列原文全文，再列每次磨损，最后才是差集。
+    顺序是刻意的——先看原文，再看磨损，最后才看别人读出了什么。"""
+    tid = args.get('id')
+    t = store.text(tid)
+    if not t:
+        return {'ok': False, 'msg': f'找不到 {tid}'}
+    uses = [u for u in store.all_uses() if u['text_id'] == tid]
+    worn = set()
+    for u in uses:
+        worn |= set(u.get('cut') or [])
+    return {
+        'ok': True,
+        '1_原文（完整，先读这个）': t['raw'],
+        '2_磨损（你的概括砍掉了什么）': sorted(worn),
+        '3_每次使用': [{'背景': u['context'], '读出': u['reads'],
+                        '砍掉': u.get('cut') or []} for u in uses],
+        '4_提示': '磨损里有没有你以为原文就有、其实是概括补进去的东西？那才是要研究的。',
     }
 
 
@@ -274,7 +290,7 @@ def parse(argv):
 
 
 CMDS = {'init': cmd_init, 'say': cmd_say, 'use': cmd_use,
-        'cover': cmd_cover, 'texts': cmd_texts, 'merge': cmd_merge,
+        'cover': cmd_cover, 'back': cmd_back, 'texts': cmd_texts, 'merge': cmd_merge,
         'seams': cmd_seams, 'check': cmd_check}
 
 
