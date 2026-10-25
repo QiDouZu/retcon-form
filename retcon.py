@@ -1,32 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-retcon 执行壳 v0.1 —— 五种记录 + 缝 + 三个查询。零依赖，一个目录一个库。
+retcon 壳 v0.2 —— 单位是「同一句话的多次使用」。
 
-用法：
+一句话（原文）被反复使用。每一次使用，都是一次覆盖：
+    1. 它原本的语义被磨损（磨掉的是这次没用上的部分）
+    2. 背景给它补上新的东西（这次用出来的部分）
+    3. 你不可能完全覆盖它 —— 多出来的差，就是研究的对象
+
+所以核心不是「逻辑」「表象」「变体」，是：
+    同一句话 + N 次使用 + 每次读出的东西
+    交集  = 相同的地方（让人研究的入口，反复稳定的意思）
+    差集  = 覆盖不到的部分（研究点本身）
+    磨损  = 只在早期出现过、后来不再出现的读法
+
+用法（零依赖）：
     python retcon.py <库目录> init
-    python retcon.py <库目录> surface  --source "BV11jnm6bENb 4帧" --logics L1,L2
-    python retcon.py <库目录> logic    --id L1 --surface L1_surface
-    python retcon.py <库目录> done     L1 --text "我以为这是账本不是时间"
-    python retcon.py <库目录> doing    L1 --text "被当成时间才是议题"
-    python retcon.py <库目录> challenge L1 --note "取12帧验"
-    python retcon.py <库目录> variant  --logic L1 --id V1_并列十二坑
-    python retcon.py <库目录> close    L1 --reason "无新变体"
-    python retcon.py <库目录> reopen   L1 --reason "新证据"
-    python retcon.py <库目录> q1       <surface_id>
-    python retcon.py <库目录> q2       <variant_id>
-    python retcon.py <库目录> q3       <surface_id>
+    python retcon.py <库目录> say --raw "写不出推翻条件就别写" --source "10-25 对话"
+    python retcon.py <库目录> use T1 --context "自检时" --read "拦废话,拦表演"
+    python retcon.py <库目录> use T1 --context "教别人时" --read "拦废话,教不会的人"
+    python retcon.py <库目录> cover T1
+    python retcon.py <库目录> texts
+    python retcon.py <库目录> seams [--tail 10]
     python retcon.py <库目录> check
-    python retcon.py <库目录> show     <id>
-    python retcon.py <库目录> seams    [--tail 10]
-
-设计约束（写死在代码里，不进文档）：
-1. 原文永不被写：任何操作只追加，不改旧行。改写 = 拒绝。
-2. 任何结论不许自立为事实：derived 必须带来源坐标。
-3. 合并只允许「相同点」：产物是一条 derived 记录，原文不动。不同点不允许合并。
-4. 没有权重、没有评分、没有标签、没有相似度。
-
-缝是 append-only 的链，回根 = 沿缝逆序回溯。
 """
 
 import json
@@ -34,29 +30,11 @@ import sys
 import os
 import time
 
-STATE_EMPTY = '空'
-STATE_HALF = '单栏'
-STATE_BOTH = '双栏齐备'
-STATE_TEST = '被测试'
-STATE_CLOSED = '封闭'
-STATE_TOMB = '墓碑'
+STATE_NEW = '生'      # 0 次使用：还没有被用过，没有被覆盖，没有差集
+STATE_USED = '用'     # ≥1 次使用
+STATE_SAT = '饱和'    # 连续两次使用不再产生新读法
 
-# 唯一允许的状态迁移： (from, op, to)
-TRANSITIONS = {
-    ('空', 'write_done', '单栏'),
-    ('单栏', 'write_doing', '双栏齐备'),
-    ('双栏齐备', 'challenge', '被测试'),
-    ('被测试', 'spawn_variant', '被测试'),
-    ('被测试', 'close', '封闭'),
-    ('封闭', 'reopen', '被测试'),
-}
-
-LEGAL_OPS = {
-    'create', 'amend_done', 'amend_doing', 'challenge', 'spawn_variant',
-    'kill', 'close', 'reopen', 'compress', 'juxtapose', 'merge_same',
-}
-
-KINDS = {'surface', 'logic', 'variant', 'seam', 'compress'}
+OPS = {'say', 'use', 'seam'}
 
 
 def now():
@@ -66,12 +44,13 @@ def now():
 class Store:
     def __init__(self, root):
         self.root = root
-        self.records_path = os.path.join(root, 'records.jsonl')
-        self.seams_path = os.path.join(root, 'seams.jsonl')
+        self.texts = os.path.join(root, 'texts.jsonl')
+        self.uses = os.path.join(root, 'uses.jsonl')
+        self.seams = os.path.join(root, 'seams.jsonl')
 
     def init(self):
         os.makedirs(self.root, exist_ok=True)
-        for p in (self.records_path, self.seams_path):
+        for p in (self.texts, self.uses, self.seams):
             if not os.path.exists(p):
                 open(p, 'a', encoding='utf-8').close()
         return {'ok': True, 'msg': f'库已建：{self.root}'}
@@ -87,341 +66,167 @@ class Store:
                     out.append(json.loads(line))
         return out
 
-    def records(self):
-        return self._read(self.records_path)
+    def all_texts(self):
+        return self._read(self.texts)
 
-    def seams(self):
-        return self._read(self.seams_path)
+    def all_uses(self):
+        return self._read(self.uses)
 
-    def by_id(self, rid):
-        for r in self.records():
-            if r.get('id') == rid:
-                return r
-        return None
+    def all_seams(self):
+        return self._read(self.seams)
 
-    # ── 追加即真相 ──
-    def append_record(self, rec):
-        with open(self.records_path, 'a', encoding='utf-8') as f:
+    def text(self, tid):
+        # 同一 id 取最后一条（状态会被新版本覆盖，原文不动）
+        hits = [t for t in self.all_texts() if t['id'] == tid]
+        return hits[-1] if hits else None
+
+    def append(self, path, rec):
+        with open(path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(rec, ensure_ascii=False) + '\n')
 
-    def append_seam(self, seam):
-        with open(self.seams_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(seam, ensure_ascii=False) + '\n')
+    def seam(self, op, targets, before, after, reason=''):
+        self.append(self.seams, {
+            'id': f's_{int(time.time()*1000)}', 'ts': now(),
+            'actor': 'user', 'op': op, 'targets': targets,
+            'before': before, 'after': after, 'reason': reason,
+        })
 
 
-def new_seam(actor, op, targets, before, after, reason=''):
-    return {
-        'id': f'seam_{int(time.time()*1000)}',
-        'ts': now(),
-        'actor': actor,
-        'op': op,
-        'targets': targets,
-        'before': before,
-        'after': after,
-        'reason': reason,
-    }
+def split_reads(s):
+    return [x.strip() for x in (s or '').split(',') if x.strip()]
 
 
 def cmd_init(store, args):
     return store.init()
 
 
-def get_or_fail(store, rid, kind=None):
-    # ⚠ 取当前版本（同 id 最后一条），不是第一条——状态机只认最新态
-    r = _current(store, rid)
-    if not r:
-        return None, f'找不到 {rid}'
-    if kind and r.get('kind') != kind:
-        return None, f'{rid} 是 {r.get("kind")}，不是 {kind}'
-    return r, None
+def cmd_say(store, args):
+    raw = (args.get('raw') or '').strip()
+    if not raw:
+        return {'ok': False, 'msg': 'say 要一句话原文（--raw）'}
+    # 同一句话只建一次：原文一模一样就复用
+    for t in store.all_texts():
+        if t['raw'] == raw:
+            return {'ok': True, 'msg': f'这句话已有：{t["id"]}（原文不改）', 'record': t, 'reuse': True}
+    tid = args.get('id') or f'T{len(store.all_texts())+1}'
+    if store.text(tid):
+        return {'ok': False, 'msg': f'{tid} 已存在'}
+    rec = {'id': tid, 'raw': raw, 'source': args.get('source', ''),
+           'state': STATE_NEW, 'created': now()}
+    store.append(store.texts, rec)
+    store.seam('say', [tid], None, rec, '建一句话')
+    return {'ok': True, 'msg': f'{tid} 已建：{raw[:30]}', 'record': rec}
 
 
-def cmd_surface(store, args):
-    sid = args.get('id') or f'surf_{int(time.time()*1000)}'
-    logics = [x.strip() for x in (args.get('logics') or '').split(',') if x.strip()]
-    if not args.get('source'):
-        return {'ok': False, 'msg': 'surface 的 source（原文坐标）必填'}
-    rec = {'id': sid, 'kind': 'surface', 'source': args['source'],
-           'logics': logics, 'created': now()}
-    store.append_record(rec)
-    store.append_seam(new_seam('user', 'create', [sid], None, rec, '建表象'))
-    return {'ok': True, 'msg': f'表象 {sid} 已建（逻辑 {len(logics)} 条）', 'record': rec}
+def cmd_use(store, args):
+    tid = args.get('id')
+    t = store.text(tid)
+    if not t:
+        return {'ok': False, 'msg': f'找不到 {tid}'}
+    reads = split_reads(args.get('read'))
+    if not reads:
+        return {'ok': False, 'msg': 'use 必须写这次读出了什么（--read，逗号分隔）'}
+    ctx = (args.get('context') or '').strip()
+    if not ctx:
+        return {'ok': False, 'msg': 'use 必须写背景（--context）——没有背景就没有覆盖'}
+    uses = [u for u in store.all_uses() if u['text_id'] == tid]
+    uid = f'{tid}_u{len(uses)+1}'
+    before = set()
+    for u in uses:
+        before |= set(u['reads'])
+    new_reads = [r for r in reads if r not in before]
+    rec = {'id': uid, 'text_id': tid, 'context': ctx,
+           'reads': reads, 'new': new_reads, 'ts': now()}
+    store.append(store.uses, rec)
+
+    # 状态：用过 ≥1 次 = 用；连续两次无新增 = 饱和
+    state = STATE_USED
+    if uses:
+        last_new = uses[-1].get('new') or []
+        if not new_reads and not last_new:
+            state = STATE_SAT
+    t2 = dict(t)
+    t2['state'] = state
+    store.append(store.texts, t2)
+    store.seam('use', [tid, uid], None, rec,
+               f'第{len(uses)+1}次使用；新增{len(new_reads)}条')
+    return {'ok': True, 'msg': f'{tid} 第{len(uses)+1}次使用（背景：{ctx}）',
+            'record': rec, 'text_state': state}
 
 
-def cmd_logic(store, args):
-    lid = args.get('id') or f'L{int(time.time()*1000)}'
-    sid = args.get('surface')
-    if not sid:
-        return {'ok': False, 'msg': 'logic 必须挂在一个 surface 上'}
-    sur, err = get_or_fail(store, sid, 'surface')
-    if err:
-        return {'ok': False, 'msg': err}
-    if store.by_id(lid):
-        return {'ok': False, 'msg': f'{lid} 已存在（原文不覆盖）'}
-    rec = {'id': lid, 'kind': 'logic', 'surface_id': sid,
-           'produced_from': args.get('produced_from'),
-           'done': None, 'doing': None, 'variants': [],
-           'state': STATE_EMPTY, 'created': now()}
-    store.append_record(rec)
-    # 挂到 surface 上：只追加一条 surface 更新记录？——不行，原文不写。
-    # 做法：surface.logics 是派生视图，由 q1 按 surface_id 反查算出来。
-    store.append_seam(new_seam('user', 'create', [lid], None, rec, '建逻辑'))
-    return {'ok': True, 'msg': f'逻辑 {lid} 已建（空状态）', 'record': rec}
+def cmd_cover(store, args):
+    tid = args.get('id')
+    t = store.text(tid)
+    if not t:
+        return {'ok': False, 'msg': f'找不到 {tid}'}
+    uses = [u for u in store.all_uses() if u['text_id'] == tid]
+    if not uses:
+        return {'ok': True, 'text': t['raw'], 'msg': '这句话还没被用过：没有覆盖，也没有差集',
+                '使用次数': 0, '研究点': [], '相同的地方': []}
+    sets = [set(u['reads']) for u in uses]
+    union = set().union(*sets)
+    inter = set.intersection(*sets) if len(sets) > 1 else set()
+    every_seen = union
+    # 磨损：只在早期出现、最后一次之后不再出现
+    worn = []
+    if len(uses) > 1:
+        last = set(uses[-1]['reads'])
+        for r in union:
+            if r not in last:
+                appeared_at = [i for i, u in enumerate(uses) if r in u['reads']]
+                if appeared_at and max(appeared_at) < len(uses) - 1:
+                    worn.append(r)
+    return {
+        'ok': True,
+        'text': t['raw'],
+        '使用次数': len(uses),
+        '相同的地方（交集）': sorted(inter),
+        '多出来的（每次独有）': {u['id']: [r for r in u['reads'] if r not in inter] for u in uses},
+        '差集（研究点）': sorted(union - inter),
+        '磨损（只在早期出现）': worn,
+        '状态': t['state'],
+        '说明': '交集=反复稳定的意思；差集=覆盖不到的部分；磨损=这次用掉了的老意思',
+    }
 
 
-def _set_field(store, rec, field, value, op):
-    """只追加新行（同 id 的新版本），不回写旧行。旧行靠 seq 顺序胜出。"""
-    new = dict(rec)
-    new[field] = value
-    new['seq'] = len(store.records())  # 版本序
-    store.append_record(new)
-    return new
-
-
-def _current(store, rid):
-    """同 id 取最后一条（版本序）"""
-    hits = [r for r in store.records() if r.get('id') == rid]
-    return hits[-1] if hits else None
-
-
-def migrate(store, rec, op, to_state, note=''):
-    cur = rec.get('state')
-    if (cur, op, to_state) not in TRANSITIONS:
-        return {'ok': False, 'msg': f'非法迁移：{cur} --{op}--> {to_state}'}
-    new = _set_field(store, rec, 'state', to_state, op)
-    store.append_seam(new_seam('user', op, [rec['id']], cur, to_state, note))
-    return {'ok': True, 'msg': f'{rec["id"]}：{cur} → {to_state}', 'record': new}
-
-
-def _logics_of(store, sid):
-    """属于某个表象的全部逻辑（按 id 去重，取当前版本）"""
-    seen = {}
-    for r in store.records():
-        if r.get('kind') == 'logic' and r.get('surface_id') == sid:
-            seen[r['id']] = r
-    return [_current(store, i) for i in seen]
-
-
-def cmd_done(store, args):
-    rec, err = get_or_fail(store, args['id'], 'logic')
-    if err:
-        return {'ok': False, 'msg': err}
-    if not args.get('text'):
-        return {'ok': False, 'msg': '完成时这一栏必须有字，不许空着'}
-    if rec['state'] == STATE_EMPTY:
-        new = _set_field(store, rec, 'done', args['text'], 'amend_done')
-        new = _set_field(store, new, 'state', STATE_HALF, 'amend_done')
-        store.append_seam(new_seam('user', 'amend_done', [rec['id']], None, args['text'], '写完成时 → 单栏'))
-        return {'ok': True, 'msg': '完成时已写（单栏=非法态，必须再写进行时）', 'record': new}
-    return {'ok': False, 'msg': '完成时只写一次（原文不改）'}
-
-
-def cmd_doing(store, args):
-    rec, err = get_or_fail(store, args['id'], 'logic')
-    if err:
-        return {'ok': False, 'msg': err}
-    if not args.get('text'):
-        return {'ok': False, 'msg': '进行时这一栏必须有字'}
-    if rec.get('state') != STATE_HALF:
-        return {'ok': False, 'msg': f'当前 {rec.get("state")}，只有「单栏」才能写进行时'}
-    new = _set_field(store, rec, 'doing', args['text'], 'amend_doing')
-    new = _set_field(store, new, 'state', STATE_BOTH, 'amend_doing')
-    store.append_seam(new_seam('user', 'amend_doing', [rec['id']], None, args['text'], '写进行时 → 双栏齐备'))
-    return {'ok': True, 'msg': '双栏齐备（这才是真正可封存的状态）', 'record': new}
-
-
-def cmd_challenge(store, args):
-    rec, err = get_or_fail(store, args['id'], 'logic')
-    if err:
-        return {'ok': False, 'msg': err}
-    return migrate(store, rec, 'challenge', STATE_TEST, args.get('note', ''))
-
-
-def cmd_variant(store, args):
-    rec, err = get_or_fail(store, args['logic'], 'logic')
-    if err:
-        return {'ok': False, 'msg': err}
-    if rec['state'] not in (STATE_TEST,):
-        return {'ok': False, 'msg': f'只有「被测试」能产变体，现在是 {rec["state"]}'}
-    vid = args.get('id') or f'V{int(time.time()*1000)}'
-    vrec = {'id': vid, 'kind': 'variant', 'logic_id': args['logic'],
-            'born_at_seq': len(store.records()), 'killed_by': args.get('killed_by'),
-            'created': now()}
-    store.append_record(vrec)
-    cur = _current(store, rec['id'])
-    vs = list(cur.get('variants') or []) + [vid]
-    new = _set_field(store, cur, 'variants', vs, 'spawn_variant')
-    store.append_seam(new_seam('user', 'spawn_variant', [rec['id'], vid], None, vid, '产出变体'))
-    return {'ok': True, 'msg': f'{rec["id"]} 产出变体 {vid}', 'record': new, 'variant': vrec}
-
-
-def cmd_close(store, args):
-    rec, err = get_or_fail(store, args['id'], 'logic')
-    if err:
-        return {'ok': False, 'msg': err}
-    if not args.get('reason'):
-        return {'ok': False, 'msg': '封闭必须写 reason（医生：三种 op 必填 reason）'}
-    return migrate(store, rec, 'close', STATE_CLOSED, args['reason'])
-
-
-def cmd_reopen(store, args):
-    rec, err = get_or_fail(store, args['id'], 'logic')
-    if err:
-        return {'ok': False, 'msg': err}
-    if not args.get('reason'):
-        return {'ok': False, 'msg': 'reopen 必须写 reason'}
-    return migrate(store, rec, 'reopen', STATE_TEST, args['reason'])
-
-
-def cmd_merge_same(store, args):
-    """合并相同点：产物是 derived，原文一条不动。这正是用户要的「合并的是相同的地方」。"""
-    ids = [x.strip() for x in (args.get('ids') or '').split(',') if x.strip()]
-    if len(ids) < 2:
-        return {'ok': False, 'msg': 'merge_same 至少两条'}
-    recs = []
-    for rid in ids:
-        r, err = get_or_fail(store, rid)
-        if err:
-            return {'ok': False, 'msg': err}
-        recs.append(r)
-    mid = args.get('id') or f'M{int(time.time()*1000)}'
-    mrec = {'id': mid, 'kind': 'variant', 'logic_id': None,
-            'derived_from': ids, 'born_at_seq': len(store.records()),
-            'killed_by': None, 'created': now(),
-            'note': '相同点合并（交集视图），原文保留'}
-    store.append_record(mrec)
-    store.append_seam(new_seam('user', 'merge_same', ids + [mid], None, mid, '合并相同点'))
-    return {'ok': True, 'msg': f'相同点合成 {mid}（derived，原文不动）', 'record': mrec}
-
-
-def cmd_q1(store, args):
-    sid = args['id']
-    sur, err = get_or_fail(store, sid, 'surface')
-    if err:
-        return {'ok': False, 'msg': err}
-    logics = _logics_of(store, sid)
-    # 每个逻辑的变体集合（取当前版本）
-    cur = {}
-    for L in logics:
-        cur[L['id']] = L
-    sets = {}
-    for lid, L in cur.items():
-        vs = set(L.get('variants') or [])
-        if vs:
-            sets[lid] = vs
-    if not sets:
-        return {'ok': True, 'msg': '这个表象下还没有变体，Q1 只对已有变体做差集'}
-    union = set().union(*sets.values())
-    inter = set.intersection(*sets.values()) if len(sets) > 1 else set()
-    diff = union - inter
-    return {'ok': True, 'msg': 'Q1：相同点（交集）+ 多出来的部分（差集）',
-            '相同点': sorted(inter),
-            '差集': sorted(diff),
-            '各逻辑': {k: sorted(v) for k, v in sets.items()},
-            '说明': '相同点 = 让人研究的；差集 = 边界。两个都算，不丢'}
-
-
-def cmd_q2(store, args):
-    vid = args['id']
-    v = store.by_id(vid)
-    if not v:
-        return {'ok': False, 'msg': f'找不到 {vid}'}
-    # 找 op=spawn_variant 的缝，targets 含该变体
-    hits = [s for s in store.seams() if s.get('op') == 'spawn_variant' and vid in s.get('targets', [])]
-    if not hits:
-        return {'ok': True, 'msg': f'{vid} 没有对应的推翻缝（它可能不是被推翻产出的）', '能kill的': []}
-    victim_logics = []
-    for s in hits:
-        for t in s['targets']:
-            if t != vid:
-                victim_logics.append(t)
-    return {'ok': True, 'msg': f'{vid} 来自推翻，能kill到 {len(set(victim_logics))} 个逻辑',
-            '能kill的': sorted(set(victim_logics)),
-            '说明': '能kill到≠0 → 这些逻辑共享同一个根本矛盾'}
-
-
-def cmd_q3(store, args):
-    sid = args['id']
-    sur, err = get_or_fail(store, sid, 'surface')
-    if err:
-        return {'ok': False, 'msg': err}
-    logics = _logics_of(store, sid)
-    cur = logics
-    n = len(cur)
-    per = {}
-    for L in cur:
-        per[L['id']] = len(L.get('variants') or [])
-    total = sum(per.values()) or 1
-    warn = n == 1 or any(c == total for c in per.values()) or (n > 1 and max(per.values(), default=0) == total)
-    # 独有变体数
-    uniq = {}
-    for L in cur:
-        ids = set(L.get('variants') or [])
-        other = set()
-        for L2 in cur:
-            if L2['id'] != L['id']:
-                other |= set(L2.get('variants') or [])
-        uniq[L['id']] = len(ids - other)
-    return {'ok': True, 'msg': 'Q3：垄断度',
-            '逻辑数': n, '独有变体数': uniq,
-            '告警': bool(warn or (n == 1)),
-            '说明': 'N=1 或某条独有变体数=总数 → 先到者垄断'}
-
-
-def cmd_check(store, args):
-    recs = store.records()
-    errs = []
-    cur = {}
-    for r in recs:
-        cur[r['id']] = r
-    for rid, r in cur.items():
-        k = r.get('kind')
-        if k == 'logic':
-            if r['state'] == STATE_HALF:
-                errs.append(f'{rid}: 单栏是非法态（必须补进行时）')
-            if r['state'] == STATE_TEST and not (r.get('variants') or []):
-                errs.append(f'{rid}: 被测试但零变体（提出推翻但没产出）')
-            if r['state'] == STATE_CLOSED:
-                seams = [s for s in store.seams() if r['id'] in s.get('targets', []) and s.get('op') == 'close']
-                if not seams or not seams[-1].get('reason'):
-                    errs.append(f'{rid}: 封闭但没写 reason')
-            if r.get('done') and not r.get('doing') and r['state'] != STATE_EMPTY:
-                errs.append(f'{rid}: 有完成时没进行时')
-    # 缝 op 合法性
-    for s in store.seams():
-        if s.get('op') not in LEGAL_OPS:
-            errs.append(f'缝 {s["id"]}: 非法 op {s.get("op")}（不许自定义）')
-    return {'ok': not errs, 'msg': f'检查 {len(cur)} 条记录、{len(store.seams())} 条缝，{len(errs)} 个问题',
-            '问题': errs}
-
-
-def cmd_show(store, args):
-    r = store.by_id(args['id'])
-    if not r:
-        return {'ok': False, 'msg': '找不到'}
-    return {'ok': True, 'record': r}
+def cmd_texts(store, args):
+    rows = []
+    for t in store.all_texts():
+        n = len([u for u in store.all_uses() if u['text_id'] == t['id']])
+        rows.append({'id': t['id'], 'raw': t['raw'], '使用次数': n, '状态': t['state']})
+    return {'ok': True, 'texts': rows}
 
 
 def cmd_seams(store, args):
     n = int(args.get('tail', 10))
-    ss = store.seams()[-n:]
-    return {'ok': True, 'seams': ss}
+    return {'ok': True, 'seams': store.all_seams()[-n:]}
+
+
+def cmd_check(store, args):
+    errs = []
+    tid = {t['id'] for t in store.all_texts()}
+    for u in store.all_uses():
+        if u['text_id'] not in tid:
+            errs.append(f'{u["id"]}: 挂在不存在的句子 {u["text_id"]} 上')
+        if not u.get('reads'):
+            errs.append(f'{u["id"]}: 没有任何读法')
+    return {'ok': not errs,
+            'msg': f'{len(tid)} 句话、{len(store.all_uses())} 次使用、{len(errs)} 个问题',
+            '问题': errs}
 
 
 def parse(argv):
     cmd = argv[0] if argv else 'help'
-    args = {}
-    rest = []
-    i = 1
+    args, rest, i = {}, [], 1
     while i < len(argv):
         a = argv[i]
         if a.startswith('--'):
-            key = a[2:]
+            k = a[2:]
             if i + 1 < len(argv) and not argv[i + 1].startswith('--'):
-                args[key] = argv[i + 1]
+                args[k] = argv[i + 1]
                 i += 2
             else:
-                args[key] = True
+                args[k] = True
                 i += 1
         else:
             rest.append(a)
@@ -431,18 +236,12 @@ def parse(argv):
     return cmd, args
 
 
-CMDS = {
-    'init': cmd_init, 'surface': cmd_surface, 'logic': cmd_logic,
-    'done': cmd_done, 'doing': cmd_doing, 'challenge': cmd_challenge,
-    'variant': cmd_variant, 'close': cmd_close, 'reopen': cmd_reopen,
-    'merge-same': cmd_merge_same,
-    'q1': cmd_q1, 'q2': cmd_q2, 'q3': cmd_q3,
-    'check': cmd_check, 'show': cmd_show, 'seams': cmd_seams,
-}
+CMDS = {'init': cmd_init, 'say': cmd_say, 'use': cmd_use,
+        'cover': cmd_cover, 'texts': cmd_texts,
+        'seams': cmd_seams, 'check': cmd_check}
 
 
 def main():
-    # Windows 终端默认 GBK，中文会乱码；强制 UTF-8 输出
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     except Exception:
@@ -457,9 +256,8 @@ def main():
         print(f'未知命令：{cmd}')
         return 2
     store = Store(root)
-    if cmd != 'init':
-        if not os.path.exists(store.records_path):
-            store.init()
+    if cmd != 'init' and not os.path.exists(store.texts):
+        store.init()
     res = CMDS[cmd](store, args)
     print(json.dumps(res, ensure_ascii=False, indent=2))
     return 0 if res.get('ok') else 1
