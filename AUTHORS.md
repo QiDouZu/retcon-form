@@ -7,6 +7,7 @@
 - **GitHub**：[@QiDouZu](https://github.com/QiDouZu)
 - **B站**：[深海里的阿深](https://space.bilibili.com/3747572741048857)（UID `3747572741048857`，视频与开发纪实都在这里）
 - **邮箱**：2560840425@qq.com
+- **双重证明**：B站 主页签名写着 `@QiDaoZu`；GitHub 主页点进去就是同一个人。两边互相指认——[B站空间](https://space.bilibili.com/3747572741048857) ↔ [GitHub](https://github.com/QiDouZu)
 - **提交作者**：`QiDouZu`
 - **这些问题的提出者**：回溯性重构、机制vs体验、匮乏、先删前文再纳入——全是他对话里问出来的
 - **原话**：文档里所有「这么说的」引文，都来自他的原对话，可回查
