@@ -334,10 +334,13 @@ def cmd_show(store, args):
     if not t:
         return {'ok': False, 'msg': '找不到'}
     worn, uses = wear_of(store, t)
-    worn_i = {s['i'] for s in worn}
+    # 还没被用过：不算磨损（没概括过，就没有削减）
+    worn_i = {s['i'] for s in worn} if uses else set()
     segs = [{'i': s['i'], 'text': s['text'], '磨损': s['i'] in worn_i}
             for s in t['segments']]
-    return {'ok': True, '原文': t['raw'], '段': segs, '使用次数': len(uses)}
+    return {'ok': True, '原文': t['raw'],
+            '提示': '' if uses else '还没被用过：没有概括，就没有磨损',
+            '段': segs, '使用次数': len(uses)}
 
 
 def cmd_seams(store, args):
