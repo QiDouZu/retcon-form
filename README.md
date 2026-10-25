@@ -7,9 +7,11 @@
 **为什么有用**：AI 的上下文永远是被压过的结论，用久了就变成"事实"。这套格式让每条结论都带着"怎么推翻我"的入口。
 
 **三步用起来**：
-1. 拷走 `格式.md` + `AI_PROMPT.md` + `scripts/check_seal.py`
+1. 拷走 `格式.md` + `AI_PROMPT.md` + `retcon.py`（壳）
 2. 把 `AI_PROMPT.md` 粘进任何 AI 的提示词
-3. `python scripts/check_seal.py <目录>` 检查
+3. `python retcon.py <库> init` → `say` → `cover` → `seams` 查磨损
+
+**给 AI 装成技能**：仓库根目录有 `SKILL.md`（Agent Skills 协议），支持 skills 的 runtime 可直接加载，不用手动粘贴。
 
 **不装插件，零依赖**（Python 3 标准库）。
 
