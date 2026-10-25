@@ -1,44 +1,56 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-retcon 壳 v0.2 —— 单位是「同一句话的多次使用」。
+retcon 壳 v0.3 —— 磨损按「段」定位，二分逼近。
 
-一句话（原文）被反复使用。每一次使用，都是一次覆盖：
-    1. 它原本的语义被磨损（磨掉的是这次没用上的部分）
-    2. 背景给它补上新的东西（这次用出来的部分）
-    3. 你不可能完全覆盖它 —— 多出来的差，就是研究的对象
+一句话（原文）被机械切成 N 段（只按标点切，不按语义）。
+每次使用记下「这次覆盖了哪几段」。没有覆盖到的段，就是磨损。
 
-所以核心不是「逻辑」「表象」「变体」，是：
-    同一句话 + N 次使用 + 每次读出的东西
-    交集  = 相同的地方（让人研究的入口，反复稳定的意思）
-    差集  = 覆盖不到的部分（研究点本身）
-    磨损  = 只在早期出现过、后来不再出现的读法
+为什么是段：
+    磨损不是「少了一点」这种模糊的东西 —— 它是具体的第 3 段、第 7 段。
+    察觉到结论有问题 = 察觉到磨损的地方 = 二分到具体哪一段。
 
 用法（零依赖）：
-    python retcon.py <库目录> init
-    python retcon.py <库目录> say --raw "写不出推翻条件就别写" --source "10-25 对话"
-    python retcon.py <库目录> use T1 --context "自检时" --read "拦废话,拦表演"
-    python retcon.py <库目录> use T1 --context "教别人时" --read "拦废话,教不会的人"
-    python retcon.py <库目录> cover T1
-    python retcon.py <库目录> texts
-    python retcon.py <库目录> seams [--tail 10]
-    python retcon.py <库目录> check
+    python retcon.py <库> init
+    python retcon.py <库> say --raw "原文……" --source "出处"
+    python retcon.py <库> cover T1 --use u1 --reads "3,7"     # 这次用了第3、7段
+    python retcon.py <库> wear  T1                            # 没被任何一次带走的段
+    python retcon.py <库> bisect T1                           # 二分逼近磨损
+    python retcon.py <库> show  T1
+    python retcon.py <库> seams
+    python retcon.py <库> check
+
+设计约束：
+1. 原文永不被写：任何操作只追加。
+2. 切段规则是机械的（按标点），不是语义分类。
+3. 磨损是算出来的（没被任何一次覆盖的段），不是选出来的。
 """
 
 import json
 import sys
 import os
+import re
 import time
 
-STATE_NEW = '生'      # 0 次使用：还没有被用过，没有被覆盖，没有差集
-STATE_USED = '用'     # ≥1 次使用
-STATE_SAT = '饱和'    # 连续两次使用不再产生新读法
-
-OPS = {'say', 'use', 'seam'}
+# 只按标点切：逗号/句号/问号/叹号/分号/冒号/换行/破折号
+SPLIT_RE = re.compile(r'[，。！？；：\n、]+|——|--')
+CJK = re.compile(r'[\u4e00-\u9fff]')
 
 
 def now():
     return time.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def split_segments(raw):
+    """机械切段：只按标点，不判断意思。短于 2 个汉字的碎片合并到前一段。"""
+    parts = [p.strip() for p in SPLIT_RE.split(raw) if p.strip()]
+    out = []
+    for p in parts:
+        if out and len(CJK.findall(p)) < 2:
+            out[-1] = out[-1] + ' ' + p
+        else:
+            out.append(p)
+    return out
 
 
 class Store:
@@ -76,7 +88,6 @@ class Store:
         return self._read(self.seams)
 
     def text(self, tid):
-        # 同一 id 取最后一条（状态会被新版本覆盖，原文不动）
         hits = [t for t in self.all_texts() if t['id'] == tid]
         return hits[-1] if hits else None
 
@@ -92,8 +103,13 @@ class Store:
         })
 
 
-def split_reads(s):
-    return [x.strip() for x in (s or '').split(',') if x.strip()]
+def parse_nums(s):
+    out = []
+    for x in (s or '').split(','):
+        x = x.strip()
+        if x.isdigit():
+            out.append(int(x))
+    return out
 
 
 def cmd_init(store, args):
@@ -104,155 +120,113 @@ def cmd_say(store, args):
     raw = (args.get('raw') or '').strip()
     if not raw:
         return {'ok': False, 'msg': 'say 要一句话原文（--raw）'}
-    # 同一句话只建一次：原文一模一样就复用
     for t in store.all_texts():
         if t['raw'] == raw:
             return {'ok': True, 'msg': f'这句话已有：{t["id"]}（原文不改）', 'record': t, 'reuse': True}
-    tid = args.get('id') or f'T{len(store.all_texts())+1}'
+    tid = args.get('id') or f'T{len({t["id"] for t in store.all_texts()})+1}'
     if store.text(tid):
         return {'ok': False, 'msg': f'{tid} 已存在'}
+    segs = split_segments(raw)
     rec = {'id': tid, 'raw': raw, 'source': args.get('source', ''),
-           'state': STATE_NEW, 'created': now()}
+           'segments': [{'i': i + 1, 'text': s} for i, s in enumerate(segs)],
+           'created': now()}
     store.append(store.texts, rec)
-    store.seam('say', [tid], None, rec, '建一句话')
-    return {'ok': True, 'msg': f'{tid} 已建：{raw[:30]}', 'record': rec}
-
-
-def cmd_use(store, args):
-    tid = args.get('id')
-    t = store.text(tid)
-    if not t:
-        return {'ok': False, 'msg': f'找不到 {tid}'}
-    reads = split_reads(args.get('read'))
-    if not reads:
-        return {'ok': False, 'msg': 'use 必须写这次读出了什么（--read，逗号分隔）'}
-    ctx = (args.get('context') or '').strip()
-    if not ctx:
-        return {'ok': False, 'msg': 'use 必须写背景（--context）——没有背景就没有覆盖'}
-    # 磨损 = 这次概括时砍掉了原文的哪部分（不是「后来消失的读法」）
-    cut = split_reads(args.get('cut'))
-    uses = [u for u in store.all_uses() if u['text_id'] == tid]
-    uid = f'{tid}_u{len(uses)+1}'
-    rec = {'id': uid, 'text_id': tid, 'context': ctx,
-           'reads': reads, 'cut': cut, 'ts': now()}
-    store.append(store.uses, rec)
-
-    # 状态：用过 ≥1 次 = 用；连续两次读法相同且都没有新削减 = 饱和
-    state = STATE_USED
-    if uses:
-        last = uses[-1]
-        if set(last.get('reads') or []) == set(reads) and set(last.get('cut') or []) == set(cut):
-            state = STATE_SAT
-    t2 = dict(t)
-    t2['state'] = state
-    store.append(store.texts, t2)
-    store.seam('use', [tid, uid], None, rec,
-               f'第{len(uses)+1}次使用；读出{len(reads)}条；砍掉{len(cut)}条原文')
-    return {'ok': True, 'msg': f'{tid} 第{len(uses)+1}次使用（背景：{ctx}）',
-            'record': rec, 'text_state': state}
+    store.seam('say', [tid], None, rec, f'建一句话，切成 {len(segs)} 段')
+    return {'ok': True, 'msg': f'{tid} 已建，切成 {len(segs)} 段', 'record': rec}
 
 
 def cmd_cover(store, args):
+    """一次使用：--use u1 --reads 3,7（这次带走了哪几段）"""
     tid = args.get('id')
     t = store.text(tid)
     if not t:
         return {'ok': False, 'msg': f'找不到 {tid}'}
-    uses = [u for u in store.all_uses() if u['text_id'] == tid]
+    uid = args.get('use') or f'{tid}_u{len([u for u in store.all_uses() if u["text_id"] == tid]) + 1}'
+    nums = parse_nums(args.get('reads'))
+    if not nums:
+        return {'ok': False, 'msg': 'cover 必须写这次带走了哪几段（--reads 3,7）'}
+    n = len(t['segments'])
+    bad = [x for x in nums if x < 1 or x > n]
+    if bad:
+        return {'ok': False, 'msg': f'段号越界：{bad}（原文只有 {n} 段）'}
+    ctx = (args.get('context') or '').strip()
+    rec = {'id': uid, 'text_id': tid, 'context': ctx, 'reads': sorted(set(nums)), 'ts': now()}
+    store.append(store.uses, rec)
+    store.seam('cover', [tid, uid], None, rec,
+               f'{uid} 带走第 {",".join(map(str, rec["reads"]))} 段')
+    return {'ok': True, 'msg': f'{uid} 已记（带走 {len(rec["reads"])} 段）', 'record': rec}
+
+
+def wear_of(store, t):
+    """磨损 = 原文里从没被任何一次使用带走的段"""
+    uses = [u for u in store.all_uses() if u['text_id'] == t['id']]
+    covered = set()
+    for u in uses:
+        covered |= set(u['reads'])
+    return [s for s in t['segments'] if s['i'] not in covered], uses
+
+
+def cmd_wear(store, args):
+    tid = args.get('id')
+    t = store.text(tid)
+    if not t:
+        return {'ok': False, 'msg': f'找不到 {tid}'}
+    worn, uses = wear_of(store, t)
     if not uses:
-        return {'ok': True, 'text': t['raw'],
-                'msg': '这句话还没被用过：没有概括，就没有磨损',
-                '使用次数': 0}
-    sets = [set(u['reads']) for u in uses]
-    union = set().union(*sets)
-    inter = set.intersection(*sets) if len(sets) > 1 else set()
-    # 磨损并集：每次概括砍掉的原文，合起来就是「你到现在为止没看见的那部分」
-    worn = set()
-    for u in uses:
-        worn |= set(u.get('cut') or [])
+        return {'ok': True, 'msg': '还没被用过：没有覆盖，就没有磨损',
+                '原文': t['raw'], '段数': len(t['segments']), '磨损段': []}
     return {
         'ok': True,
-        '原文': t['raw'],
         '使用次数': len(uses),
-        '每次概括': [{'背景': u['context'], '读出的': u['reads'],
-                      '砍掉原文': u.get('cut') or []} for u in uses],
-        '相同的地方（交集）': sorted(inter),
-        '差集（研究点）': sorted(union - inter),
-        '磨损（概括砍掉的原文，并集）': sorted(worn),
-        '磨损次数': len(worn),
-        '状态': t['state'],
-        '说明': '磨损=每次概括砍掉的那部分原文；回头读原文，才看得见少了什么',
+        '磨损段（没被任何一次带走）': worn,
+        '磨损段数': len(worn),
+        '原文段数': len(t['segments']),
+        '提示': '察觉结论有问题 = 察觉这些段里的某一段。用 bisect 二分定位。',
     }
 
 
-def cmd_back(store, args):
-    """回头看：先列原文全文，再列每次磨损，最后才是差集。
-    顺序是刻意的——先看原文，再看磨损，最后才看别人读出了什么。"""
+def cmd_bisect(store, args):
+    """二分逼近：默认先看整个区间，人回答这一半有没有问题，逐层缩到单段。"""
     tid = args.get('id')
     t = store.text(tid)
     if not t:
         return {'ok': False, 'msg': f'找不到 {tid}'}
-    uses = [u for u in store.all_uses() if u['text_id'] == tid]
-    worn = set()
-    for u in uses:
-        worn |= set(u.get('cut') or [])
-    return {
-        'ok': True,
-        '1_原文（完整，先读这个）': t['raw'],
-        '2_磨损（你的概括砍掉了什么）': sorted(worn),
-        '3_每次使用': [{'背景': u['context'], '读出': u['reads'],
-                        '砍掉': u.get('cut') or []} for u in uses],
-        '4_提示': '磨损里有没有你以为原文就有、其实是概括补进去的东西？那才是要研究的。',
-    }
+    worn, uses = wear_of(store, t)
+    if not worn:
+        return {'ok': True, 'msg': '没有磨损段：原文被覆盖完整了', '磨损段': []}
+    lo, hi = args.get('lo'), args.get('hi')
+    segs = t['segments']
+    left = [s for s in worn if s['i'] <= len(segs) // 2] if not (lo or hi) else [s for s in worn if int(lo) <= s['i'] <= int(hi)]
+    # 无参数时：对整个磨损区间做第一次二分
+    if not (lo or hi):
+        mid = len(segs) // 2
+        first = [s for s in worn if s['i'] <= mid]
+        second = [s for s in worn if s['i'] > mid]
+        return {'ok': True,
+                'msg': '第一刀：把整段原文切成两半，磨损段分成左边和右边',
+                '左边（第1段到第%d段）' % mid: first,
+                '右边（第%d段到第%d段）' % (mid + 1, len(segs)): second,
+                '怎么走': '察觉结论哪里不对，就先看哪一半有问题，再往那半二分。'
+                          '带 --lo 3 --hi 7 缩到某个区间。'}
+    return {'ok': True, '区间': f'{lo}-{hi}', '磨损段': left,
+            '怎么走': '区间里还有多段，继续 --lo N --hi M 二分。'}
 
 
-def cmd_texts(store, args):
-    rows = []
-    seen = {}
-    for t in store.all_texts():
-        seen[t['id']] = t
-    for tid, t in seen.items():
-        n = len([u for u in store.all_uses() if u.get('text_id') == t['id']])
-        rows.append({'id': t['id'], 'raw': t['raw'], '使用次数': n, '状态': t['state']})
-    return {'ok': True, 'texts': rows}
+def cmd_show(store, args):
+    tid = args.get('id')
+    t = store.text(tid)
+    if not t:
+        return {'ok': False, 'msg': '找不到'}
+    worn, uses = wear_of(store, t)
+    worn_i = {s['i'] for s in worn}
+    segs = [{'i': s['i'], 'text': s['text'], '磨损': s['i'] in worn_i}
+            for s in t['segments']]
+    return {'ok': True, '原文': t['raw'], '段': segs, '使用次数': len(uses)}
 
 
 def cmd_seams(store, args):
     n = int(args.get('tail', 10))
     return {'ok': True, 'seams': store.all_seams()[-n:]}
-
-
-def cmd_merge(store, args):
-    """合并相同的地方：取若干次使用（或若干句话）的交集，产出一条 derived 记录。
-    原文一条不动；不同点（差集）永不合并。"""
-    ids = [x.strip() for x in (args.get('use') or '').split(',') if x.strip()]
-    use_recs = []
-    if ids:
-        for uid in ids:
-            hit = [u for u in store.all_uses() if u['id'] == uid]
-            if not hit:
-                return {'ok': False, 'msg': f'找不到使用记录 {uid}'}
-            use_recs.append(hit[-1])
-    else:
-        tid = args.get('id')
-        if not tid:
-            return {'ok': False, 'msg': 'merge 要给 --use u1,u2 或者 <句子id>'}
-        use_recs = [u for u in store.all_uses() if u['text_id'] == tid]
-        if len(use_recs) < 2:
-            return {'ok': False, 'msg': f'{tid} 使用次数不足 2 次，没有可合并的相同点'}
-    sets = [set(u['reads']) for u in use_recs]
-    inter = set.intersection(*sets)
-    if not inter:
-        return {'ok': True, 'msg': '这几次使用没有交集：没有可合并的相同点（差集才是研究点）',
-                '相同点': [], '来源': [u['id'] for u in use_recs]}
-    mid = args.get('mid') or f'M{int(time.time()*1000)}'
-    rec = {'id': mid, 'kind': 'derived', 'from_uses': [u['id'] for u in use_recs],
-           'reads': sorted(inter), 'ts': now(),
-           'note': '合并相同的地方（交集），原文不动；不同点不合并'}
-    store.append(store.uses, rec)
-    store.seam('merge', [mid] + [u['id'] for u in use_recs], None, rec,
-               f'合并 {len(use_recs)} 次使用的交集')
-    return {'ok': True, 'msg': f'相同点合成 {mid}（derived，原文不动）',
-            '相同点': sorted(inter), '来源': [u['id'] for u in use_recs]}
 
 
 def cmd_check(store, args):
@@ -261,10 +235,10 @@ def cmd_check(store, args):
     for u in store.all_uses():
         if u['text_id'] not in tid:
             errs.append(f'{u["id"]}: 挂在不存在的句子 {u["text_id"]} 上')
-        if not u.get('reads'):
-            errs.append(f'{u["id"]}: 没有任何读法')
-    return {'ok': not errs,
-            'msg': f'{len(tid)} 句话、{len(store.all_uses())} 次使用、{len(errs)} 个问题',
+    for t in store.all_texts():
+        if not t.get('segments'):
+            errs.append(f'{t["id"]}: 没有切段')
+    return {'ok': not errs, 'msg': f'{len(tid)} 句话、{len(store.all_uses())} 次使用、{len(errs)} 个问题',
             '问题': errs}
 
 
@@ -289,8 +263,8 @@ def parse(argv):
     return cmd, args
 
 
-CMDS = {'init': cmd_init, 'say': cmd_say, 'use': cmd_use,
-        'cover': cmd_cover, 'back': cmd_back, 'texts': cmd_texts, 'merge': cmd_merge,
+CMDS = {'init': cmd_init, 'say': cmd_say, 'cover': cmd_cover,
+        'wear': cmd_wear, 'bisect': cmd_bisect, 'show': cmd_show,
         'seams': cmd_seams, 'check': cmd_check}
 
 
