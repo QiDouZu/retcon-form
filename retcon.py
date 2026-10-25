@@ -145,6 +145,8 @@ def cmd_say(store, args):
 def cmd_cover(store, args):
     """一次使用：--use u1 --reads 3,7（这次带走了哪几段）"""
     tid = args.get('id')
+    if not tid:
+        return {'ok': False, 'msg': 'cover 必须指定句子 id：cover T1 --use u1 --reads 3,7'}
     t = store.text(tid)
     if not t:
         return {'ok': False, 'msg': f'找不到 {tid}'}
@@ -382,6 +384,30 @@ def parse(argv):
     return cmd, args
 
 
+def cmd_demo(store, args):
+    """demo：建临时库，5 分钟看完整闭环（不回写任何真实库）。"""
+    import tempfile
+    root = tempfile.mkdtemp(prefix='retcon-demo-')
+    store = Store(root)
+    out = []
+    def run(fn, a):
+        res = fn(store, a)
+        out.append(_human(res))
+        return res
+    store.init()
+    run(cmd_say, {'raw': '这个项目应该先求收益，再谈理想。否则撑不过起步期。'})
+    run(cmd_cover, {'id': 'T1', 'use': 'u1', 'reads': '2'})
+    run(cmd_wear, {'id': 'T1'})
+    run(cmd_bisect, {'id': 'T1'})
+    run(cmd_vars, {'id': 'T1'})
+    run(cmd_study, {'id': 'T1', 'seg': '1', 'finding': '第一段是结论，第二段是理由，第三段是缺口'})
+    run(cmd_trace, {'id': 'T1', 'segs': '1,2'})
+    run(cmd_monitor, {'id': 'T1'})
+    run(cmd_check, {})
+    out.append(f'临时库：{root}（demo 是只读演示，不写你的真实库）')
+    return {'ok': True, 'msg': 'demo 跑完：说一句 → 覆盖 → 看磨损 → 二分 → 变量表 → 研究一段 → 反推 → 流水', '输出': out}
+
+
 CMDS = {'init': cmd_init, 'say': cmd_say, 'cover': cmd_cover,
         'wear': cmd_wear, 'bisect': cmd_bisect, 'show': cmd_show,
         'vars': cmd_vars, 'study': cmd_study, 'trace': cmd_trace,
@@ -440,6 +466,12 @@ def main():
     except Exception:
         pass
     argv = sys.argv[1:]
+    if argv and argv[0] == 'demo':
+        store = Store('')  # demo 自己建临时库
+        res = cmd_demo(store, {})
+        print('\n\n'.join(res.get('输出', [])))
+        print(f'\n{res.get("msg", "")}')
+        return 0
     if len(argv) < 2 or argv[1] == 'help':
         print(__doc__)
         return 0
