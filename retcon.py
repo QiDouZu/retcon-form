@@ -76,10 +76,16 @@ class Store:
             return []
         out = []
         with open(path, encoding='utf-8') as f:
-            for line in f:
+            for lineno, line in enumerate(f, 1):
                 line = line.strip()
-                if line:
+                if not line:
+                    continue
+                try:
                     out.append(json.loads(line))
+                except json.JSONDecodeError as e:
+                    # 手工编辑坏一行不该让整个库崩：跳过、报位置，后面的继续读
+                    print(f'⚠ {os.path.basename(path)} 第 {lineno} 行不是合法 JSON（{e.msg}），已跳过',
+                          file=sys.stderr)
         return out
 
     def all_texts(self):
