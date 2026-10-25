@@ -191,8 +191,11 @@ def cmd_cover(store, args):
 
 def cmd_texts(store, args):
     rows = []
+    seen = {}
     for t in store.all_texts():
-        n = len([u for u in store.all_uses() if u['text_id'] == t['id']])
+        seen[t['id']] = t
+    for tid, t in seen.items():
+        n = len([u for u in store.all_uses() if u.get('text_id') == t['id']])
         rows.append({'id': t['id'], 'raw': t['raw'], '使用次数': n, '状态': t['state']})
     return {'ok': True, 'texts': rows}
 
