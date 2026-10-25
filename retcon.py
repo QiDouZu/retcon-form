@@ -276,6 +276,12 @@ def cmd_study(store, args):
             '下一段': rec['next'] or '（没写下一步：这次研究没接上任何东西）'}
 
 
+def trace_segs_check(t, segs):
+    n = len(t['segments'])
+    bad = [x for x in segs if x < 1 or x > n]
+    return bad, n
+
+
 def cmd_trace(store, args):
     """结果可反推：这组段号当初是被哪几次使用带走的、哪天、谁动的。"""
     tid = args.get('id')
@@ -285,6 +291,9 @@ def cmd_trace(store, args):
     segs = parse_nums(args.get('segs'))
     if not segs:
         return {'ok': False, 'msg': 'trace 必须给 --segs 5,6（要反推的段号）'}
+    bad, n = trace_segs_check(t, segs)
+    if bad:
+        return {'ok': False, 'msg': f'段号越界：{bad}（原文只有 {n} 段）'}
     uses = [u for u in store.all_uses() if u['text_id'] == tid]
     studies = [s for s in store.all_studies() if s['text_id'] == tid]
     sources = []
@@ -377,6 +386,51 @@ CMDS = {'init': cmd_init, 'say': cmd_say, 'cover': cmd_cover,
         'seams': cmd_seams, 'check': cmd_check}
 
 
+def _human(res):
+    """默认输出：给人读的文本。--json 才出机器格式。"""
+    lines = []
+
+    def walk(v, indent=0):
+        pad = '  ' * indent
+        if isinstance(v, list):
+            if not v:
+                lines.append(f'{pad}（空）')
+            for it in v:
+                if isinstance(it, dict):
+                    seg = it.get('段') if '段' in it else it.get('i')
+                    text = it.get('text') or it.get('原文') or ''
+                    rest = {k: x for k, x in it.items()
+                            if k not in ('段', 'i', 'text', '原文')}
+                    head = f'{pad}{seg}  {text}'.rstrip() if seg is not None else pad.rstrip()
+                    if rest:
+                        head += '   ' + '  '.join(f'{k}={x}' for k, x in rest.items())
+                    lines.append(head)
+                else:
+                    lines.append(f'{pad}· {it}')
+        elif isinstance(v, dict):
+            for k, x in v.items():
+                if isinstance(x, (list, dict)):
+                    lines.append(f'{pad}{k}:')
+                    walk(x, indent + 1)
+                else:
+                    lines.append(f'{pad}{k}: {x}')
+        else:
+            lines.append(f'{pad}{v}')
+
+    for k, v in res.items():
+        if k == 'ok':
+            continue
+        if k == 'msg':
+            lines.append(str(v))
+            continue
+        if isinstance(v, (list, dict)):
+            lines.append(f'{k}:')
+            walk(v, 1)
+        else:
+            lines.append(f'{k}: {v}')
+    return '\n'.join(lines)
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -395,7 +449,10 @@ def main():
     if cmd != 'init' and not os.path.exists(store.texts):
         store.init()
     res = CMDS[cmd](store, args)
-    print(json.dumps(res, ensure_ascii=False, indent=2))
+    if args.get('json'):
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    else:
+        print(_human(res))
     return 0 if res.get('ok') else 1
 
 
