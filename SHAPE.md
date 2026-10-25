@@ -92,6 +92,7 @@ python retcon.py <库> say  --raw "写不出推翻条件就别写" --source "10-
 python retcon.py <库> use  T1 --context "自检时"     --read "拦废话,拦表演"
 python retcon.py <库> use  T1 --context "教别人时"   --read "拦废话,教不会的人"
 python retcon.py <库> cover T1
+python retcon.py <库> merge T1                    ← 合并相同的地方（交集），原文不动
 python retcon.py <库> texts
 python retcon.py <库> seams
 python retcon.py <库> check

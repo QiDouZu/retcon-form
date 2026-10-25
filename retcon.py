@@ -202,6 +202,40 @@ def cmd_seams(store, args):
     return {'ok': True, 'seams': store.all_seams()[-n:]}
 
 
+def cmd_merge(store, args):
+    """合并相同的地方：取若干次使用（或若干句话）的交集，产出一条 derived 记录。
+    原文一条不动；不同点（差集）永不合并。"""
+    ids = [x.strip() for x in (args.get('use') or '').split(',') if x.strip()]
+    use_recs = []
+    if ids:
+        for uid in ids:
+            hit = [u for u in store.all_uses() if u['id'] == uid]
+            if not hit:
+                return {'ok': False, 'msg': f'找不到使用记录 {uid}'}
+            use_recs.append(hit[-1])
+    else:
+        tid = args.get('id')
+        if not tid:
+            return {'ok': False, 'msg': 'merge 要给 --use u1,u2 或者 <句子id>'}
+        use_recs = [u for u in store.all_uses() if u['text_id'] == tid]
+        if len(use_recs) < 2:
+            return {'ok': False, 'msg': f'{tid} 使用次数不足 2 次，没有可合并的相同点'}
+    sets = [set(u['reads']) for u in use_recs]
+    inter = set.intersection(*sets)
+    if not inter:
+        return {'ok': True, 'msg': '这几次使用没有交集：没有可合并的相同点（差集才是研究点）',
+                '相同点': [], '来源': [u['id'] for u in use_recs]}
+    mid = args.get('mid') or f'M{int(time.time()*1000)}'
+    rec = {'id': mid, 'kind': 'derived', 'from_uses': [u['id'] for u in use_recs],
+           'reads': sorted(inter), 'ts': now(),
+           'note': '合并相同的地方（交集），原文不动；不同点不合并'}
+    store.append(store.uses, rec)
+    store.seam('merge', [mid] + [u['id'] for u in use_recs], None, rec,
+               f'合并 {len(use_recs)} 次使用的交集')
+    return {'ok': True, 'msg': f'相同点合成 {mid}（derived，原文不动）',
+            '相同点': sorted(inter), '来源': [u['id'] for u in use_recs]}
+
+
 def cmd_check(store, args):
     errs = []
     tid = {t['id'] for t in store.all_texts()}
@@ -237,7 +271,7 @@ def parse(argv):
 
 
 CMDS = {'init': cmd_init, 'say': cmd_say, 'use': cmd_use,
-        'cover': cmd_cover, 'texts': cmd_texts,
+        'cover': cmd_cover, 'texts': cmd_texts, 'merge': cmd_merge,
         'seams': cmd_seams, 'check': cmd_check}
 
 
