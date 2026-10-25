@@ -1,29 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-retcon 壳 v0.3 —— 磨损按「段」定位，二分逼近。
+retcon 壳 v0.4 —— 段定位磨损 + 分离单一变量 + 过程可监控 + 结果可反推。
 
 一句话（原文）被机械切成 N 段（只按标点切，不按语义）。
 每次使用记下「这次覆盖了哪几段」。没有覆盖到的段，就是磨损。
-
-为什么是段：
-    磨损不是「少了一点」这种模糊的东西 —— 它是具体的第 3 段、第 7 段。
-    察觉到结论有问题 = 察觉到磨损的地方 = 二分到具体哪一段。
+磨损里一段一段分开研究 —— 一次只研究一个变量，研究完再换下一个。
 
 用法（零依赖）：
     python retcon.py <库> init
     python retcon.py <库> say --raw "原文……" --source "出处"
-    python retcon.py <库> cover T1 --use u1 --reads "3,7"     # 这次用了第3、7段
-    python retcon.py <库> wear  T1                            # 没被任何一次带走的段
-    python retcon.py <库> bisect T1                           # 二分逼近磨损
+    python retcon.py <库> cover T1 --reads "1,2,3" --context "写 SHAPE 时"
+    python retcon.py <库> vars  T1                    # 分离：每段一个变量，看哪些还没研究
+    python retcon.py <库> study T1 --seg 5 --finding "这一段我之前完全没带走" --next "去看原文第5段"
+    python retcon.py <库> wear  T1                    # 还没被任何一次带走的段
+    python retcon.py <库> bisect T1                   # 二分逼近（--lo --hi 缩区间）
+    python retcon.py <库> trace T1 --segs 5,6         # 反推：这个结论由哪几次使用支撑、哪天写的
+    python retcon.py <库> monitor T1                  # 过程监控：这条判断一路怎么走过来的
     python retcon.py <库> show  T1
-    python retcon.py <库> seams
     python retcon.py <库> check
 
 设计约束：
 1. 原文永不被写：任何操作只追加。
 2. 切段规则是机械的（按标点），不是语义分类。
 3. 磨损是算出来的（没被任何一次覆盖的段），不是选出来的。
+4. 一次只研究一段（单一变量）：study 必须指定 --seg，不许写「整体上」。
+5. 过程可监控：每次操作都落一条缝，缝可回放。
+6. 结果可反推：任何结论必须能反推回它的段号与缝。
 """
 
 import json
@@ -58,11 +61,12 @@ class Store:
         self.root = root
         self.texts = os.path.join(root, 'texts.jsonl')
         self.uses = os.path.join(root, 'uses.jsonl')
+        self.studies = os.path.join(root, 'studies.jsonl')
         self.seams = os.path.join(root, 'seams.jsonl')
 
     def init(self):
         os.makedirs(self.root, exist_ok=True)
-        for p in (self.texts, self.uses, self.seams):
+        for p in (self.texts, self.uses, self.studies, self.seams):
             if not os.path.exists(p):
                 open(p, 'a', encoding='utf-8').close()
         return {'ok': True, 'msg': f'库已建：{self.root}'}
@@ -83,6 +87,9 @@ class Store:
 
     def all_uses(self):
         return self._read(self.uses)
+
+    def all_studies(self):
+        return self._read(self.studies)
 
     def all_seams(self):
         return self._read(self.seams)
@@ -212,6 +219,106 @@ def cmd_bisect(store, args):
             '怎么走': '区间里还有多段，继续 --lo N --hi M 二分。'}
 
 
+def cmd_vars(store, args):
+    """分离单一变量：一段 = 一个变量。列表上每段只有三个状态。"""
+    tid = args.get('id')
+    t = store.text(tid)
+    if not t:
+        return {'ok': False, 'msg': f'找不到 {tid}'}
+    worn, uses = wear_of(store, t)
+    worn_i = {s['i'] for s in worn}
+    studied = {}
+    for st in store.all_studies():
+        if st['text_id'] == tid:
+            studied.setdefault(st['seg'], []).append(st)
+    rows = []
+    for s in t['segments']:
+        i = s['i']
+        if i in studied:
+            state = '已研究'
+        elif i in worn_i:
+            state = '磨损待研究'
+        else:
+            state = '已被带走'
+        rows.append({'段': i, 'text': s['text'], '状态': state,
+                     '研究次数': len(studied.get(i, []))})
+    todo = [r for r in rows if r['状态'] == '磨损待研究']
+    return {'ok': True, '变量数': len(rows), '还没研究的': len(todo),
+            '变量': rows,
+            '下一步': f'一次只研究一段。挑第一段磨损：python retcon.py <库> study {tid} --seg {todo[0]["段"]} --finding "…"' if todo else '全部变量都已处理（带走或研究过）。'}
+
+
+def cmd_study(store, args):
+    """研究单一变量：一次只许一段。--next 不给就等于没往下推。"""
+    tid = args.get('id')
+    t = store.text(tid)
+    if not t:
+        return {'ok': False, 'msg': f'找不到 {tid}'}
+    seg = args.get('seg')
+    if not seg or not str(seg).isdigit():
+        return {'ok': False, 'msg': 'study 必须指定 --seg N（一次只研究一个变量）'}
+    seg = int(seg)
+    n = len(t['segments'])
+    if seg < 1 or seg > n:
+        return {'ok': False, 'msg': f'段号 {seg} 越界（原文 {n} 段）'}
+    finding = (args.get('finding') or '').strip()
+    if not finding:
+        return {'ok': False, 'msg': 'study 必须写这次研究出了什么（--finding）'}
+    sid = f'{tid}_s{len([x for x in store.all_studies() if x["text_id"] == tid]) + 1}'
+    rec = {'id': sid, 'text_id': tid, 'seg': seg, 'finding': finding,
+           'next': (args.get('next') or '').strip(), 'ts': now()}
+    store.append(store.studies, rec)
+    seg_text = [s['text'] for s in t['segments'] if s['i'] == seg][0]
+    store.seam('study', [tid, sid], None, rec,
+               f'研究第{seg}段「{seg_text[:20]}」')
+    return {'ok': True, 'msg': f'第{seg}段已研究：{finding[:40]}',
+            'record': rec,
+            '下一段': rec['next'] or '（没写下一步：这次研究没接上任何东西）'}
+
+
+def cmd_trace(store, args):
+    """结果可反推：这组段号当初是被哪几次使用带走的、哪天、谁动的。"""
+    tid = args.get('id')
+    t = store.text(tid)
+    if not t:
+        return {'ok': False, 'msg': f'找不到 {tid}'}
+    segs = parse_nums(args.get('segs'))
+    if not segs:
+        return {'ok': False, 'msg': 'trace 必须给 --segs 5,6（要反推的段号）'}
+    uses = [u for u in store.all_uses() if u['text_id'] == tid]
+    studies = [s for s in store.all_studies() if s['text_id'] == tid]
+    sources = []
+    for u in uses:
+        hit = sorted(set(segs) & set(u['reads']))
+        if hit:
+            sources.append({'使用': u['id'], '背景': u['context'],
+                            '带走的段': hit, '时间': u['ts']})
+    seg_texts = {s['i']: s['text'] for s in t['segments']}
+    return {
+        'ok': True,
+        '反推目标段': [{'段': i, 'text': seg_texts.get(i, '')} for i in segs],
+        '由哪几次使用支撑': sources,
+        '研究记录': [s for s in studies if s['seg'] in segs],
+        '原文': t['raw'],
+        '提示': '如果某个段没有任何使用支撑，说明它是「事后才被发现的」——那正是磨损。',
+    }
+
+
+def cmd_monitor(store, args):
+    """过程可监控：这条判断一路的操作流水（缝），按时间顺排。"""
+    tid = args.get('id')
+    t = store.text(tid)
+    if not t:
+        return {'ok': False, 'msg': f'找不到 {tid}'}
+    seams = [s for s in store.all_seams() if tid in (s.get('targets') or [])]
+    # 按时间排序（seam id 里带毫秒）
+    seams.sort(key=lambda s: s['id'])
+    return {'ok': True, '操作数': len(seams),
+            '流水': [{'时间': s['ts'], '动作': s['op'],
+                      '内容': s['reason'] or s['after']} for s in seams],
+            '原文': t['raw']}
+
+
 def cmd_show(store, args):
     tid = args.get('id')
     t = store.text(tid)
@@ -265,6 +372,8 @@ def parse(argv):
 
 CMDS = {'init': cmd_init, 'say': cmd_say, 'cover': cmd_cover,
         'wear': cmd_wear, 'bisect': cmd_bisect, 'show': cmd_show,
+        'vars': cmd_vars, 'study': cmd_study, 'trace': cmd_trace,
+        'monitor': cmd_monitor,
         'seams': cmd_seams, 'check': cmd_check}
 
 

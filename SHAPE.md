@@ -87,16 +87,83 @@ python retcon.py <库> bisect T1 --lo 5 --hi 6
 
 ---
 
+## 五、分离单一变量 → 逐个研究 → 监控 → 反推
+
+### 5.1 分离：一段 = 一个变量
+
+```
+python retcon.py <库> vars T1
+```
+
+```
+变量数 6，还没研究的 3
+  段1  关于同一句话的多次使用        已被带走
+  段2  是将它原本的语义磨损          已被带走
+  段3  然后看它背景提供的新的东西    已被带走
+  段4  在于你对他的覆盖本身          磨损待研究
+  段5  你不能对它完全覆盖            磨损待研究   ← 下一步研究这段
+  段6  而这多出来的部分就是研究的    磨损待研究
+```
+
+**每一段就是一个独立变量。** 不分大小、不排序、不合并。
+
+### 5.2 逐个研究：一次只研究一段
+
+```
+python retcon.py <库> study T1 --seg 5 \
+  --finding "我以为磨损是后来消失的读法，其实这段说的是覆盖不完全" \
+  --next "再研究第6段"
+```
+
+- **必须给 `--seg`**（不许写「整体上」——那是换一套语义）
+- **必须给 `--finding`**（这次研究出了什么）
+- **`--next` 不给，就等于这次研究没接上任何东西**，命令会自己提醒你
+
+研究完一段，`vars` 里它就变成「已研究」，待研究数减 1。
+
+### 5.3 过程可监控
+
+```
+python retcon.py <库> monitor T1
+```
+
+```
+11:40:55  say      建一句话，切成 6 段
+11:40:55  cover    T1_u1 带走第 1,2,3 段
+11:42:43  study    研究第5段「你不能对它完全覆盖」
+```
+
+**每一步都落一条缝，按时间顺排。** 中途换过人、改过主意，都在这条流水里。
+
+### 5.4 结果可反推
+
+```
+python retcon.py <库> trace T1 --segs 5,6
+```
+
+```
+反推目标段       段5「你不能对它完全覆盖」 段6「而这多出来的部分就是研究的」
+由哪几次使用支撑 []
+研究记录         T1_s1（第5段：我以为磨损是后来消失的读法…）
+```
+
+**`由哪几次使用支撑` 是空的** —— 意思是：这两段**从来没有被任何一次使用带走**。它们不是"忘了"，是"从来没有过"。**空支撑就是磨损的铁证。**
+
+---
+
 ## 六、命令
 
 ```bash
 python retcon.py <库> init
 python retcon.py <库> say  --raw "原文……" --source "出处"
 python retcon.py <库> cover T1 --reads "1,2,3" --context "写 SHAPE 时"
-python retcon.py <库> cover T1 --reads "1,2,4,5" --context "给医生报告时"
+python retcon.py <库> vars  T1        # 分离：每段一个变量
+python retcon.py <库> study T1 --seg 5 --finding "…" --next "…"   # 一次一个
 python retcon.py <库> wear  T1        # 磨损段（没被任何一次带走）
-python retcon.py <库> bisect T1       # 二分逼近（--lo N --hi M 缩区间）
-python retcon.py <库> show  T1        # 全文 + 哪段磨损
+python retcon.py <库> bisect T1       # 二分逼近（--lo N --hi M）
+python retcon.py <库> trace T1 --segs 5,6   # 反推：谁支撑了这段
+python retcon.py <库> monitor T1      # 过程：一路怎么走过来的
+python retcon.py <库> show  T1
 python retcon.py <库> check
 ```
 
