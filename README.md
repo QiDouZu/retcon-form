@@ -17,7 +17,7 @@
 | 它凭什么成立（判断是过程 / 否定要扬弃 / 找区分条件） | [AI辩证法](https://github.com/QiDouZu/retcon-docs/blob/main/AI辩证法.md) |
 | 它反对什么（幻觉 = 用单因解释复杂） | [AI形而上学·与数字时代的辩证法](https://github.com/QiDouZu/retcon-docs/blob/main/AI形而上学_与数字时代的辩证法.md) |
 | 为什么说它不是洗脑，是火苗 | [AI话术·革命的火苗](https://github.com/QiDouZu/retcon-docs/blob/main/AI话术_革命的火苗.md) |
-| 谁先被洗（训练样本里的"必须有用"） | [AI的洗脑·与它的否定](https://github.com/QiDouZu/retcon-docs/blob/main/AI的洗脑_与它的否定.md) |
+| 谁先被洗（训练样本里的"必须有用"） | [对AI的洗脑·与它的否定](https://github.com/QiDouZu/retcon-docs/blob/main/对AI的洗脑_与它的否定.md) |
 | 它说胡话时怎么查（**压缩不是删除**） | [说胡话·一次性读太多](https://github.com/QiDouZu/retcon-docs/blob/main/说胡话_一次性读太多.md) |
 | 前人走过哪些死路 | [不该走的路](https://github.com/QiDouZu/retcon-docs/blob/main/不该走的路.md) |
 | 走偏了怎么拉回来 | [矫正](https://github.com/QiDouZu/retcon-docs/blob/main/矫正.md) |
