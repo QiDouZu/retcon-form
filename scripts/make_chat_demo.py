@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-SRC = Path(r'D:\大肥鱼工作区\发布\回溯性重构_格式包\引流视频素材')
+SRC = Path(__file__).resolve().parent.parent.parent / '发布' / '回溯性重构_格式包' / '引流视频素材'
 WORK = SRC / '_build_chat'
 W, H = 1920, 1080
 FONT = r'C:\Windows\Fonts\msyh.ttc'

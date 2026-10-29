@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-OUT = Path(r'D:\大肥鱼工作区\发布\回溯性重构_格式包\引流视频素材\10_第5期_封面.png')
+OUT = Path(__file__).resolve().parent.parent.parent / '发布' / '回溯性重构_格式包' / '引流视频素材' / '10_第5期_封面.png'
 W, H = 1920, 1080
 BOLD = r'C:\Windows\Fonts\msyhbd.ttc'
 REG = r'C:\Windows\Fonts\msyh.ttc'
